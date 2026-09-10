@@ -1,0 +1,18 @@
+# Instalador propietario de IBM (no redistribuible, pesa cientos de MB)
+installer/*.tar
+installer/watsonx.data-developer-edition-installer/
+
+# Credenciales y configuración local
+*.env.local
+ngrok.yml
+.config/ngrok/
+kubeconfig
+*.kubeconfig
+
+# Logs locales de los túneles
+*.log
+cf-logs/
+ngrok-logs/
+
+# Archivos de sistema
+.DS_Store

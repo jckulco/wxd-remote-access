@@ -1,0 +1,15 @@
+[Unit]
+Description=kubectl port-forward for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wxd-tunnels/%i.env
+Environment=KUBECONFIG=/root/.kube/config
+ExecStart=/usr/bin/kubectl -n wxd port-forward svc/${SVC} ${LOCAL_PORT}:${REMOTE_PORT} --address 0.0.0.0
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
