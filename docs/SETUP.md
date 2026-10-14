@@ -20,7 +20,7 @@ Flujo completo, de una VM RHEL limpia a las interfaces de watsonx.data accesible
 | Permisos | `root` o `sudo`. |
 | Red | Salida a internet: `download.docker.com`, `pkgs.k8s.io`, `kind.sigs.k8s.io`, `raw.githubusercontent.com` e `icr.io` (imágenes de watsonx.data). |
 | Instalador | `installer/watsonx.data-developer-edition-installer.tar` (ver `installer/README.md`). |
-| Recursos | El Developer Edition despliega ~20 pods en un solo nodo KIND; usa una VM con recursos holgados (referencia IBM: ≥ 8 vCPU / 32 GB RAM; confirma en la documentación oficial vigente). |
+| Recursos | El Developer Edition despliega ~20 pods en un solo nodo KIND. La guía oficial de IBM indica como mínimo 4+ núcleos, 16+ GB de RAM (≥ 4 GB libres en ejecución) y 500+ GB de disco con ≥ 150 GB libres, pero esas cifras están publicadas para Mac Apple silicon y Windows; **IBM no publica requisitos específicos para RHEL**. Ver Troubleshooting si el disco es lento. |
 
 ## 1. Instalar watsonx.data Developer Edition
 
@@ -49,8 +49,9 @@ Qué hace internamente el `installer.sh` de IBM (versión incluida en el `.tar`)
 4. Espera (hasta 120 × 20 s) a que todos los pods estén `Running`/`Completed`.
 5. Lanza 3 `kubectl port-forward` con `nohup`: UI `6443→443`, MinIO `9001→9001` y MDS Thrift `8381→8381`.
 
-> **Nota sobre el namespace:** la guía de IBM menciona `-n spark` en el paso 5, pero el chart
-> actual se instala en el namespace **`wxd`**. El script y esta documentación usan `wxd`.
+> **Nota sobre el namespace:** la guía oficial vigente de IBM usa el namespace **`wxd`**
+> (`kubectl get po -n wxd`). Algunas versiones/capturas antiguas mencionan `-n spark`; el chart
+> actual se instala en `wxd`, que es lo que usan el script y esta documentación.
 
 Opciones del script:
 
@@ -175,9 +176,13 @@ Si la VM se reinicia:
    kubectl -n wxd get pods
    ```
    Docker queda habilitado (`systemctl enable docker` lo hace `installer.sh`), pero el contenedor
-   `kind-wxd-control-plane` puede quedar detenido. En ese caso:
+   `kind-wxd-control-plane` puede quedar detenido. En ese caso (comando de la guía oficial de IBM):
    ```bash
    docker start kind-wxd-control-plane
+   ```
+   Para detener el entorno y liberar recursos sin desinstalar (también oficial):
+   ```bash
+   docker stop kind-wxd-control-plane
    ```
    Si el cluster no se recupera, reinstala con `sudo ./scripts/setup-watsonx-data.sh`
    (`helm upgrade --install` es idempotente; `kind create cluster` fallará si ya existe, ver Troubleshooting).
@@ -200,15 +205,19 @@ Si la VM se reinicia:
 ## 8. Desinstalar
 
 ```bash
-sudo ./scripts/setup-watsonx-data.sh --uninstall        # pide confirmación
-sudo ./scripts/setup-watsonx-data.sh --uninstall --yes  # sin confirmación
+sudo ./scripts/setup-watsonx-data.sh --uninstall                # pide confirmación
+sudo ./scripts/setup-watsonx-data.sh --uninstall --yes          # sin confirmación
+sudo ./scripts/setup-watsonx-data.sh --uninstall --purge --yes  # además desinstala Docker
 ```
 
 Hace `helm uninstall wxd -n wxd`, detiene los port-forwards del instalador y ejecuta
-`kind delete cluster --name kind-wxd`. **No** desinstala docker, kubectl, helm ni kind,
+`kind delete cluster --name kind-wxd`. Sin `--purge` **no** desinstala docker, kubectl, helm ni kind,
 ni toca el kit de acceso remoto (para eso: `systemctl disable --now wxd-pf@ui wxd-pf@minio wxd-pf@presto`).
 
-IBM también publica un `uninstaller.sh` oficial; úsalo si prefieres el método de IBM.
+`--purge` añade `dnf remove -y docker-ce docker-ce-cli containerd.io`, igual que el "Cleaning up"
+de la guía oficial de IBM para Linux (que además lista `kubectl delete namespace wxd`; es redundante
+porque borrar el cluster KIND ya elimina el namespace). Es destructivo: quita Docker de la VM.
+`--purge` solo es válido junto con `--uninstall`.
 
 ## Troubleshooting
 

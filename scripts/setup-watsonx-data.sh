@@ -41,6 +41,9 @@
 #                       (default: automático según la latencia medida;
 #                        umbral 10 ms, ajustable con WXD_FSYNC_MAX_MS)
 #   --uninstall         Desinstala watsonx.data (helm uninstall + borra el cluster KIND)
+#   --purge             Con --uninstall: además desinstala Docker
+#                       (dnf remove docker-ce docker-ce-cli containerd.io, como el
+#                        "Cleaning up" oficial de IBM). Destructivo.
 #   -y, --yes           No pedir confirmación (solo aplica a --uninstall)
 #   -h, --help          Muestra esta ayuda
 
@@ -73,6 +76,7 @@ TAIL_PID=""
 WITH_REMOTE_ACCESS=false
 DO_UNINSTALL=false
 ASSUME_YES=false
+PURGE=false
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 log()   { echo ">> $*"; }
@@ -86,11 +90,16 @@ while [ $# -gt 0 ]; do
     --etcd-dir)         [ $# -ge 2 ] || die "--etcd-dir requiere una ruta"; ETCD_DIR="$2"; ETCD_MODE="forced"; shift 2 ;;
     --no-etcd-relocate) ETCD_MODE="off"; shift ;;
     --uninstall)        DO_UNINSTALL=true; shift ;;
+    --purge)            PURGE=true; shift ;;
     -y|--yes)           ASSUME_YES=true; shift ;;
     -h|--help)          usage; exit 0 ;;
     *)                  die "Opción desconocida: $1 (usa --help)" ;;
   esac
 done
+
+if [ "$PURGE" = true ] && [ "$DO_UNINSTALL" != true ]; then
+  die "--purge solo se puede usar junto con --uninstall"
+fi
 
 case "$ETCD_DIR" in
   /|"") die "--etcd-dir inválido: '$ETCD_DIR'" ;;
@@ -208,7 +217,9 @@ on_interrupt() {
 uninstall() {
   require_root
   if [ "$ASSUME_YES" != true ]; then
-    read -r -p "Se desinstalará el release '$HELM_RELEASE' y se borrará el cluster KIND '$KIND_CLUSTER'. ¿Continuar? [s/N] " ans
+    local extra=""
+    [ "$PURGE" = true ] && extra=" Además se DESINSTALARÁ DOCKER (--purge)."
+    read -r -p "Se desinstalará el release '$HELM_RELEASE' y se borrará el cluster KIND '$KIND_CLUSTER'.$extra ¿Continuar? [s/N] " ans
     case "$ans" in s|S|y|Y) ;; *) echo "Cancelado."; exit 0 ;; esac
   fi
 
@@ -239,7 +250,14 @@ uninstall() {
     rmdir "$ETCD_DIR" 2>/dev/null || true
   fi
 
-  echo "OK: watsonx.data desinstalado. (docker, kubectl, helm y kind se dejan instalados.)"
+  if [ "$PURGE" = true ]; then
+    # Equivale al "Cleaning up" de la guía oficial de IBM para Linux.
+    log "Desinstalando Docker (dnf remove docker-ce docker-ce-cli containerd.io)..."
+    dnf remove -y docker-ce docker-ce-cli containerd.io || warn "dnf remove falló."
+    echo "OK: watsonx.data y Docker desinstalados. (kubectl, helm y kind se dejan instalados.)"
+  else
+    echo "OK: watsonx.data desinstalado. (docker, kubectl, helm y kind se dejan instalados.)"
+  fi
 }
 
 # ---------------------------------------------------------------------------

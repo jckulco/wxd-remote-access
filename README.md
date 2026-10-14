@@ -38,7 +38,7 @@ Herramientas para **instalar IBM watsonx.data Developer Edition** de forma autom
    ```
    y elige la opción **1) Levantar túneles**.
 
-Para desinstalar: `sudo ./scripts/setup-watsonx-data.sh --uninstall`.
+Para desinstalar: `sudo ./scripts/setup-watsonx-data.sh --uninstall` (añade `--purge` para quitar también Docker).
 
 ## Scripts
 

@@ -33,6 +33,25 @@ kubectl -n wxd get secret ibm-lh-config-secret -o jsonpath='{.data}' \
 ⚠️ En esta instalación de referencia, el valor observado fue literalmente el string
 `dummyvalue` para ambas claves — no asumas que es siempre así; verifica en tu propio cluster.
 
+## API y `cpdctl` (Developer Edition)
+
+Según la guía oficial de IBM, el `instance_id` de la instalación local es `0000-0000-0000-0000`
+(no es un secreto) y la autenticación usa el mismo usuario `ibmlhadmin` de la UI.
+
+```bash
+# Token bearer (el password es la default publicada por IBM; no se escribe aquí)
+curl -k -X POST https://localhost:6443/lakehouse/api/v3/auth/authenticate \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"ibmlhadmin","password":"<password default de IBM>","instance_id":"0000-0000-0000-0000"}'
+```
+
+Las llamadas a la API de ingestión (`/lakehouse/api/v3/lhingestion/api/v1/ingestions`)
+requieren además la cabecera `Authinstanceid: 0000-0000-0000-0000`.
+
+Para `cpdctl`: `openssl rand -hex 32 > key.txt`, `export CPDCTL_ENCRYPTION_KEY_PATH=key.txt`,
+`cpdctl config profile set cpdctl_dev --username ibmlhadmin --password <password> --url "https://localhost:6443" --env "WATSONX_DATA_INSTANCE_ID=0000-0000-0000-0000"`,
+`cpdctl config profile use cpdctl_dev` y `export CPDCTL_ENABLE_DEV_EDITION_AUTODETECT=true`.
+
 ## ngrok
 
 El authtoken de tu cuenta de ngrok se guarda localmente en `~/.config/ngrok/ngrok.yml`
