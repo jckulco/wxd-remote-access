@@ -451,32 +451,36 @@ elif $USE_WORKERS_DEV; then
   )
 
   info "  Creando/actualizando 3 Workers de proxy..."
+  # Archivo temporal para el JS — evita que curl malinterprete saltos de línea
+  # y ';' al pasar contenido multilinea con -F inline. Se limpia al salir.
+  WXD_WORKER_TMP=$(mktemp /tmp/wxd-worker-XXXXXX.js)
+  trap 'rm -f "$WXD_WORKER_TMP"' EXIT
+
   for WORKER_NAME in "wxd-proxy-ui" "wxd-proxy-minio" "wxd-proxy-presto"; do
-    TUNNEL_URL="${WORKER_BACKEND[$WORKER_NAME]}"
-    # Script JS del Worker: reenvía el request al túnel preservando método,
-    # headers y body. noTLSVerify se gestiona en el config.yml de cloudflared.
-    WORKER_JS=$(cat <<JSEOF
+    # Script JS: reenvía el request al túnel preservando método, headers y body.
+    # noTLSVerify se gestiona en el config.yml de cloudflared, no aquí.
+    cat > "$WXD_WORKER_TMP" <<JSEOF
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const target = new URL("${TUNNEL_URL}");
-    url.hostname = target.hostname;
-    url.protocol = target.protocol;
-    url.port = target.port || "";
-    const proxied = new Request(url.toString(), request);
-    return fetch(proxied);
+    url.hostname = "${TUNNEL_ID}.cfargotunnel.com";
+    url.protocol = "https:";
+    url.port = "";
+    return fetch(new Request(url.toString(), request));
   }
 };
 JSEOF
-)
+
     # La API de Workers usa multipart/form-data con dos partes:
-    # "metadata" (JSON con main_module) y el script JS como "script".
-    METADATA='{"main_module":"worker.js","compatibility_date":"2024-01-01","usage_model":"bundled"}'
+    # "metadata" (JSON) y el JS referenciado con @archivo (no inline).
+    # usage_model se omite — está deprecado en planes nuevos de Cloudflare
+    # y causa error 10021 / 400 si se incluye.
+    METADATA='{"main_module":"worker.js","compatibility_date":"2024-01-01"}'
 
     UPLOAD_RESP=$(curl -fsSL -X PUT \
       -H "Authorization: Bearer ${CF_TOKEN}" \
       -F "metadata=${METADATA};type=application/json" \
-      -F "script=${WORKER_JS};filename=worker.js;type=application/javascript+module" \
+      -F "script=@${WXD_WORKER_TMP};filename=worker.js;type=application/javascript+module" \
       "${CF_API}/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" 2>/dev/null || echo '{"success":false}')
 
     if ! echo "$UPLOAD_RESP" | jq -e '.success == true' >/dev/null 2>&1; then
