@@ -19,7 +19,8 @@ Herramientas para **instalar IBM watsonx.data Developer Edition** de forma autom
 └── docs/
     ├── ARCHITECTURE.md            # Cómo encajan las piezas (KIND, port-forward, ngrok)
     ├── SETUP.md                   # Guía paso a paso de instalación, exposición y troubleshooting
-    └── CREDENTIALS.md             # Dónde viven las credenciales default (sin valores reales)
+    ├── CREDENTIALS.md             # Dónde viven las credenciales default (sin valores reales)
+    └── IBM-DEVELOPER-EDITION-RESUMEN.md  # Resumen propio de la guía oficial de IBM (Developer Edition)
 ```
 
 ## Quickstart
