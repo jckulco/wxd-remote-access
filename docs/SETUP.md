@@ -1,20 +1,73 @@
 # Guía de instalación y exposición remota
 
+Flujo completo, de una VM RHEL limpia a las interfaces de watsonx.data accesibles por internet:
+
+```
+[1] setup-watsonx-data.sh  →  [2] install-deps.sh  →  [3] dominios ngrok  →  [4] systemd  →  [5] wxd-tunnels.sh
+     (instala wxd)              (instala ngrok)         (reserva 3)          (port-forward)      (uso diario)
+```
+
+> Atajo: `sudo ./scripts/setup-watsonx-data.sh --remote-access` ejecuta los pasos 1, 2, 4 y 5
+> (instalación de los archivos). Los pasos 3 y el `authtoken` de ngrok siempre son manuales
+> porque dependen de tu cuenta.
+
+## 0. Requisitos de la VM
+
+| Concepto | Detalle |
+|---|---|
+| SO | RHEL 8/9 o derivado (Rocky, Alma, CentOS Stream). El `installer.sh` de IBM usa `dnf`/`yum`. |
+| Arquitectura | `x86_64` o `aarch64` (el instalador descarga el binario de `kind` correspondiente). |
+| Permisos | `root` o `sudo`. |
+| Red | Salida a internet: `download.docker.com`, `pkgs.k8s.io`, `kind.sigs.k8s.io`, `raw.githubusercontent.com` e `icr.io` (imágenes de watsonx.data). |
+| Instalador | `installer/watsonx.data-developer-edition-installer.tar` (ver `installer/README.md`). |
+| Recursos | El Developer Edition despliega ~20 pods en un solo nodo KIND; usa una VM con recursos holgados (referencia IBM: ≥ 8 vCPU / 32 GB RAM; confirma en la documentación oficial vigente). |
+
 ## 1. Instalar watsonx.data Developer Edition
 
-1. Coloca el instalador de IBM en `installer/watsonx.data-developer-edition-installer.tar`
-   (ver `installer/README.md`).
-2. Corre el script de setup de tu pipeline (por ejemplo `setup-watsonx-data.sh`), que:
-   - Verifica prerrequisitos (docker, kubectl).
-   - Extrae el instalador.
-   - Crea un cluster KIND (`kind-wxd`).
-   - Despliega el Helm chart `wxd` en el namespace `wxd`.
-   - Espera a que todos los pods queden `Running`/`Completed`.
-3. Al finalizar, verifica:
-   ```bash
-   kubectl -n wxd get pods
-   kubectl -n wxd get svc
-   ```
+```bash
+sudo ./scripts/setup-watsonx-data.sh
+```
+
+El script automatiza los pasos de la guía oficial de IBM "Installing watsonx.data developer version" (RHEL):
+
+| # | Paso oficial IBM | Qué hace el script |
+|---|---|---|
+| 1 | `rm -rf ./wxd-dev-edition-installer; tar -xvf watsonx.data-developer-edition-installer.tar` | Borra el directorio previo y extrae el `.tar` en `installer/`. |
+| 2 | `cd wxd-dev-edition-installer` | Entra al directorio extraído (detecta su nombre real desde el `.tar`). |
+| 3 | `chmod 777 ./installer.sh` | `chmod 755 ./installer.sh` (suficiente, sin permisos de escritura globales). |
+| 4 | `./installer.sh` | Ejecuta el instalador de IBM y guarda la salida en `installer/setup-watsonx-data.log`. |
+| 5 | `kubectl get po -n spark -w` | Muestra los pods del namespace **`wxd`** y avisa si alguno no está `Running`/`Completed`. |
+| 6 | `kubectl port-forward ... 6443:443` | Verifica que el port-forward de la consola esté activo; si no, lo levanta. |
+| 7 | Abrir `https://<vmhost>:6443/` | Imprime la URL y las credenciales. |
+| 8 | `uninstaller.sh` (opcional) | `--uninstall`, ver sección 8. |
+
+Qué hace internamente el `installer.sh` de IBM (versión incluida en el `.tar`):
+
+1. Instala `docker-ce`, `kubectl` (repo `pkgs.k8s.io`, v1.33), `helm` y `kind` (v0.30.0).
+2. Crea el cluster KIND `kind-wxd`.
+3. Ejecuta `helm upgrade --install wxd . -f values.yaml -f values-secret.yaml -n wxd --create-namespace --timeout 120m`.
+4. Espera (hasta 120 × 20 s) a que todos los pods estén `Running`/`Completed`.
+5. Lanza 3 `kubectl port-forward` con `nohup`: UI `6443→443`, MinIO `9001→9001` y MDS Thrift `8381→8381`.
+
+> **Nota sobre el namespace:** la guía de IBM menciona `-n spark` en el paso 5, pero el chart
+> actual se instala en el namespace **`wxd`**. El script y esta documentación usan `wxd`.
+
+Opciones del script:
+
+```bash
+sudo ./scripts/setup-watsonx-data.sh --tar /ruta/al/instalador.tar   # tar en otra ubicación (o env WXD_TAR)
+sudo ./scripts/setup-watsonx-data.sh --remote-access                 # además instala ngrok + systemd + wxd-tunnels.sh
+sudo ./scripts/setup-watsonx-data.sh --help
+```
+
+Verificación manual posterior:
+
+```bash
+kubectl -n wxd get pods
+kubectl -n wxd get svc
+```
+
+Acceso local: `https://<host-de-la-VM>:6443/` — usuario `ibmlhadmin`, password `password`.
 
 ## 2. Instalar dependencias de acceso remoto
 
@@ -22,7 +75,7 @@
 sudo ./scripts/install-deps.sh
 ```
 
-Instala `ngrok`. Luego:
+Instala únicamente `ngrok` (docker, kubectl, helm y kind ya los instaló el paso 1). Luego:
 
 ```bash
 ngrok config add-authtoken <TU_TOKEN>
@@ -37,7 +90,8 @@ En https://dashboard.ngrok.com/domains, crea 3 **Agent Endpoints** con dominio f
 (uno por servicio: UI, MinIO, Presto). ngrok asigna un subdominio del tipo
 `algo-aleatorio.ngrok.app` a cada uno (el plan Hobby no permite elegir el nombre).
 
-Anota los 3 dominios y actualiza las variables al inicio de `scripts/wxd-tunnels.sh`:
+Anota los 3 dominios y actualiza las variables al inicio de `scripts/wxd-tunnels.sh`
+(si ya lo instalaste en `/usr/local/bin`, edita esa copia):
 
 ```bash
 DOMAIN_UI="tu-dominio-ui.ngrok.app"
@@ -56,9 +110,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable wxd-pf@ui wxd-pf@minio wxd-pf@presto
 ```
 
-> El unit template usa `Environment=KUBECONFIG=/root/.kube/config` — ajusta esa ruta si tu
-> kubeconfig vive en otro lugar (verifica con `kubectl config view --minify -o jsonpath='{.clusters[0].name}'`
-> o revisando `$KUBECONFIG` en tu shell).
+> El unit template usa `Environment=KUBECONFIG=/root/.kube/config` — correcto si instalaste con
+> `sudo` (kind escribe el kubeconfig en el `$HOME` de root). Ajusta la ruta si es otra.
+
+Estos servicios usan los puertos **9443 / 9101 / 9200**, distintos de los **6443 / 9001 / 8381**
+que abre `installer.sh`, por lo que ambos pueden coexistir.
 
 ## 5. Instalar el script de gestión
 
@@ -89,8 +145,13 @@ Si la VM se reinicia:
    docker ps | grep kind-wxd
    kubectl -n wxd get pods
    ```
-   Si los contenedores de KIND no arrancan solos, puede requerir recrear el cluster
-   (fuera del alcance de este kit — revisa la documentación de tu instalador de watsonx.data).
+   Docker queda habilitado (`systemctl enable docker` lo hace `installer.sh`), pero el contenedor
+   `kind-wxd-control-plane` puede quedar detenido. En ese caso:
+   ```bash
+   docker start kind-wxd-control-plane
+   ```
+   Si el cluster no se recupera, reinstala con `sudo ./scripts/setup-watsonx-data.sh`
+   (`helm upgrade --install` es idempotente; `kind create cluster` fallará si ya existe, ver Troubleshooting).
 
 2. Una vez el cluster esté sano, simplemente corre de nuevo:
    ```bash
@@ -99,3 +160,33 @@ Si la VM se reinicia:
    y elige **1) Levantar túneles**. Los servicios systemd ya quedaron habilitados
    (`systemctl enable`), así que sobreviven al reinicio por sí solos; ngrok se relanza
    manualmente vía el script (no corre como servicio systemd en esta versión).
+
+   Los port-forwards de `installer.sh` (6443/9001/8381) **no** se recuperan solos; si los necesitas,
+   relánzalos:
+   ```bash
+   export KUBECONFIG=~/.kube/config
+   nohup kubectl port-forward -n wxd service/lhconsole-ui-svc 6443:443 --address 0.0.0.0 >/dev/null 2>&1 &
+   ```
+
+## 8. Desinstalar
+
+```bash
+sudo ./scripts/setup-watsonx-data.sh --uninstall        # pide confirmación
+sudo ./scripts/setup-watsonx-data.sh --uninstall --yes  # sin confirmación
+```
+
+Hace `helm uninstall wxd -n wxd`, detiene los port-forwards del instalador y ejecuta
+`kind delete cluster --name kind-wxd`. **No** desinstala docker, kubectl, helm ni kind,
+ni toca el kit de acceso remoto (para eso: `systemctl disable --now wxd-pf@ui wxd-pf@minio wxd-pf@presto`).
+
+IBM también publica un `uninstaller.sh` oficial; úsalo si prefieres el método de IBM.
+
+## Troubleshooting
+
+| Síntoma | Causa / solución |
+|---|---|
+| `No se encontró el instalador` | El `.tar` no está en `installer/`; descárgalo o usa `--tar`. |
+| `kind create cluster` falla con "node(s) already exist" | Quedó un cluster previo: `sudo ./scripts/setup-watsonx-data.sh --uninstall` y reinstala. |
+| Pods en `ImagePullBackOff` | Sin acceso a `icr.io` o credenciales de `values-secret.yaml` inválidas; revisa red/proxy. |
+| Instalación interrumpida | Revisa `installer/setup-watsonx-data.log`; el script se puede relanzar (es re-ejecutable). |
+| Consola no abre en `:6443` | Puerto bloqueado en firewall (`firewall-cmd --add-port=6443/tcp`) o port-forward caído. |

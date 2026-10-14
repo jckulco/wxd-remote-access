@@ -1,6 +1,21 @@
 # Arquitectura
 
-## Componentes
+## Instalación de watsonx.data (capa base)
+
+`scripts/setup-watsonx-data.sh` envuelve el `installer.sh` oficial de IBM, que construye esta base:
+
+```
+VM RHEL
+ └─ Docker
+     └─ contenedor kind-wxd-control-plane   (cluster KIND de un solo nodo, "kind-wxd")
+         └─ namespace wxd                    (helm release "wxd", ~20 pods)
+```
+
+`installer.sh` además deja 3 `kubectl port-forward` (nohup) para acceso local directo:
+UI `6443→443`, MinIO `9001→9001`, MDS Thrift `8381→8381`. Estos **no** son persistentes.
+La capa de abajo (systemd + ngrok) es independiente y usa otros puertos.
+
+## Componentes del acceso remoto
 
 ```
 Internet
