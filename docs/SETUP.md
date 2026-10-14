@@ -1,6 +1,10 @@
-# Guía de instalación y exposición remota
+# Guía de acceso remoto con ngrok (alternativa)
 
-Flujo completo, de una VM RHEL limpia a las interfaces de watsonx.data accesibles por internet:
+> **Recomendación:** usa Cloudflare Tunnel (`install-cloudflare.sh`) — es gratuito, automático y
+> sobrevive a reinicios sin intervención. Ver `docs/CLOUDFLARE-SETUP.md`.
+> Esta guía cubre el flujo ngrok, que requiere plan de pago para dominios fijos.
+
+Flujo completo con ngrok, de una VM RHEL limpia a las interfaces de watsonx.data accesibles por internet:
 
 ```
 [1] setup-watsonx-data.sh  →  [2] install-deps.sh  →  [3] dominios ngrok  →  [4] systemd  →  [5] wxd-tunnels.sh

@@ -50,18 +50,12 @@ Necesitas:
 - (Opcional) Un dominio delegado a Cloudflare para URLs amigables
 
 ```bash
-# Primero instala los servicios systemd de port-forward (una sola vez):
-sudo cp systemd/wxd-pf@.service /etc/systemd/system/
-sudo mkdir -p /etc/wxd-tunnels
-sudo cp systemd/ui.env systemd/minio.env systemd/presto.env /etc/wxd-tunnels/
-sudo systemctl daemon-reload
-sudo systemctl enable wxd-pf@ui wxd-pf@minio wxd-pf@presto
-
-# Luego configura Cloudflare (instala cloudflared, crea túnel, DNS y servicio systemd):
 sudo ./scripts/install-cloudflare.sh
 ```
 
-El script te guía interactivamente. Al final muestra las URLs listas para usar. Ver `docs/CLOUDFLARE-SETUP.md` para la guía completa.
+El script instala todo automáticamente: `cloudflared`, los servicios systemd de port-forward (`wxd-pf@ui/minio/presto`) si no existen, el túnel, los registros DNS y el servicio `wxd-cloudflared`. Te guía interactivamente y al final muestra las URLs listas para usar.
+
+Ver `docs/CLOUDFLARE-SETUP.md` para la guía completa.
 
 ### Uso diario (Cloudflare)
 

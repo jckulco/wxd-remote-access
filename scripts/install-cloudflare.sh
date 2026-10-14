@@ -191,9 +191,11 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   info "  Descargando cloudflared (${CF_ARCH})..."
   curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared
   chmod +x /usr/local/bin/cloudflared
-  ok "cloudflared instalado: $(cloudflared --version)"
+  # /usr/local/bin puede no estar en PATH de root con sudo secure_path;
+  # se invoca con ruta absoluta para el mensaje de confirmación.
+  ok "cloudflared instalado: $(/usr/local/bin/cloudflared --version)"
 else
-  ok "cloudflared ya instalado: $(cloudflared --version)"
+  ok "cloudflared ya instalado: $(command -v cloudflared | xargs -I{} {} --version)"
 fi
 
 # ─── Solicitar credenciales si no se pasaron ─────────────────────────────────
@@ -409,23 +411,50 @@ fi
 chmod 600 "$CF_CONFIG_FILE"
 ok "config.yml escrito."
 
-# ─── Instalar servicio systemd ────────────────────────────────────────────────
-info "Instalando servicio systemd wxd-cloudflared..."
-
+# ─── Instalar servicios systemd de port-forward (si aún no están) ────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+PF_UNIT_SRC="${REPO_ROOT}/systemd/wxd-pf@.service"
+PF_ENV_DIR="/etc/wxd-tunnels"
+
+if [[ ! -f /etc/systemd/system/wxd-pf@.service ]]; then
+  info "Instalando servicios systemd de port-forward (wxd-pf@ui/minio/presto)..."
+  if [[ -f "$PF_UNIT_SRC" ]]; then
+    install -m 0644 "$PF_UNIT_SRC" /etc/systemd/system/wxd-pf@.service
+    install -d "$PF_ENV_DIR"
+    install -m 0644 \
+      "${REPO_ROOT}/systemd/ui.env" \
+      "${REPO_ROOT}/systemd/minio.env" \
+      "${REPO_ROOT}/systemd/presto.env" \
+      "$PF_ENV_DIR/"
+    systemctl daemon-reload
+    systemctl enable --now wxd-pf@ui wxd-pf@minio wxd-pf@presto
+    ok "Servicios wxd-pf@ui/minio/presto habilitados."
+  else
+    warn "No se encontró ${PF_UNIT_SRC}; los port-forwards deben estar instalados manualmente."
+    warn "Ver docs/CLOUDFLARE-SETUP.md sección 0."
+  fi
+else
+  ok "Servicios wxd-pf@* ya instalados."
+fi
+
+# ─── Instalar servicio systemd wxd-cloudflared ───────────────────────────────
+info "Instalando servicio systemd wxd-cloudflared..."
+
 SYSTEMD_SRC="${REPO_ROOT}/systemd/wxd-cloudflared.service"
 
 if [[ -f "$SYSTEMD_SRC" ]]; then
   cp "$SYSTEMD_SRC" /etc/systemd/system/wxd-cloudflared.service
 else
-  # Generar el unit inline si el repo no está disponible
+  # Generar el unit inline si el repo no está disponible.
+  # Se usa Wants= (no Requires=) para que cloudflared arranque aunque los
+  # port-forwards tarden o fallen temporalmente — systemd los reintentará.
   cat > /etc/systemd/system/wxd-cloudflared.service <<'UNIT'
 [Unit]
 Description=Cloudflare Tunnel for watsonx.data Developer Edition
 After=network-online.target wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
-Wants=network-online.target
-Requires=wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
+Wants=network-online.target wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
 
 [Service]
 Type=simple

@@ -1,8 +1,9 @@
 [Unit]
 Description=Cloudflare Tunnel for watsonx.data Developer Edition
 After=network-online.target wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
-Wants=network-online.target
-Requires=wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
+# Wants= en lugar de Requires=: cloudflared arranca aunque los port-forwards
+# tarden o fallen temporalmente; systemd los reintentará de forma independiente.
+Wants=network-online.target wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
 
 [Service]
 Type=simple

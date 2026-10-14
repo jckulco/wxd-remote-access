@@ -6,13 +6,13 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 ## Flujo completo
 
 ```
-[1] setup-watsonx-data.sh  →  [2] systemd port-forwards  →  [3] install-cloudflare.sh  →  [4] wxd-tunnels-cf.sh
-     (instala wxd)               (wxd-pf@ui/minio/presto)      (todo automático)              (uso diario)
+[1] setup-watsonx-data.sh  →  [2] install-cloudflare.sh  →  [3] wxd-tunnels-cf.sh
+     (instala wxd)               (todo automático)              (uso diario)
 ```
 
-> El paso 3 (`install-cloudflare.sh`) hace en una sola ejecución lo que el flujo ngrok requería
-> en 5 pasos manuales: instala el binario, autentica, crea el túnel, genera los DNS y registra
-> el servicio systemd.
+> `install-cloudflare.sh` instala en una sola ejecución: el binario `cloudflared`, los servicios
+> systemd de port-forward (`wxd-pf@ui/minio/presto`) si aún no están, crea el túnel, genera los
+> DNS y registra el servicio `wxd-cloudflared`. No se requieren pasos manuales intermedios.
 
 ## 0. Antes de empezar
 
@@ -21,7 +21,7 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 | Concepto | Detalle |
 |---|---|
 | watsonx.data instalado | `kubectl -n wxd get pods` debe mostrar pods `Running` |
-| port-forwards systemd | `wxd-pf@ui`, `wxd-pf@minio`, `wxd-pf@presto` habilitados (ver `docs/SETUP.md`, sección 4) |
+| port-forwards systemd | `wxd-pf@ui/minio/presto` — el script los instala automáticamente si no existen. Si ya los instalaste a mano no hace nada. |
 | Paquetes | `curl`, `jq`, `openssl` — en RHEL: `dnf install -y curl jq openssl` |
 | Arquitectura | `x86_64` o `aarch64` |
 
