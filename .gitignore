@@ -16,3 +16,7 @@ ngrok-logs/
 
 # Archivos de sistema
 .DS_Store
+
+# Cloudflare Tunnel — secretos generados en /etc/cloudflared/ (nunca en el repo)
+tunnel-creds.json
+wxd-urls.env

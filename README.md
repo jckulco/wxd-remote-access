@@ -1,57 +1,99 @@
 # watsonx.data Developer Edition — Install & Remote Access Kit
 
-Herramientas para **instalar IBM watsonx.data Developer Edition** de forma automática en una VM RHEL (cluster KIND local) y exponer sus interfaces web (Lakehouse UI, MinIO Console, Presto UI) a internet de forma estable mediante túneles **ngrok** con dominios fijos, más `kubectl port-forward` gestionado por **systemd** para que sobreviva a caídas de conexión y reinicios.
+Herramientas para **instalar IBM watsonx.data Developer Edition** de forma automática en una VM RHEL (cluster KIND local) y exponer sus interfaces web (Lakehouse UI, MinIO Console, Presto UI) a internet de forma estable mediante túneles con dominios fijos, más `kubectl port-forward` gestionado por **systemd** para que sobreviva a caídas de conexión y reinicios.
+
+Soporta dos backends de túnel:
+- **Cloudflare Tunnel** (recomendado) — gratuito, servicio systemd, supervivencia automática a reinicios
+- **ngrok** — alternativa, requiere plan de pago para dominios fijos
 
 ## Contenido
 
 ```
 .
-├── installer/                    # Coloca aquí el .tar del instalador de IBM (ver installer/README.md)
+├── installer/                      # Coloca aquí el .tar del instalador de IBM (ver installer/README.md)
 ├── scripts/
-│   ├── setup-watsonx-data.sh      # Instala (y desinstala) watsonx.data Developer Edition
-│   ├── install-deps.sh            # Instala ngrok (dependencia del acceso remoto)
-│   └── wxd-tunnels.sh             # Menú interactivo: levantar / detener / ver estado de los túneles
+│   ├── setup-watsonx-data.sh        # Instala (y desinstala) watsonx.data Developer Edition
+│   ├── install-cloudflare.sh        # Configura acceso remoto con Cloudflare Tunnel (recomendado, gratis)
+│   ├── install-deps.sh              # Instala ngrok (alternativa de pago)
+│   ├── wxd-tunnels-cf.sh            # Menú interactivo: gestión de túneles Cloudflare
+│   └── wxd-tunnels.sh               # Menú interactivo: gestión de túneles ngrok
 ├── systemd/
-│   ├── wxd-pf@.service            # Unit template de kubectl port-forward (uno por servicio, via %i)
-│   ├── ui.env                     # Config del port-forward para la Lakehouse UI
-│   ├── minio.env                  # Config del port-forward para MinIO Console
-│   └── presto.env                 # Config del port-forward para Presto UI
+│   ├── wxd-pf@.service              # Unit template de kubectl port-forward (uno por servicio, via %i)
+│   ├── wxd-cloudflared.service      # Unit de systemd para Cloudflare Tunnel
+│   ├── ui.env                       # Config del port-forward para la Lakehouse UI
+│   ├── minio.env                    # Config del port-forward para MinIO Console
+│   └── presto.env                   # Config del port-forward para Presto UI
 └── docs/
-    ├── ARCHITECTURE.md            # Cómo encajan las piezas (KIND, port-forward, ngrok)
-    ├── SETUP.md                   # Guía paso a paso de instalación, exposición y troubleshooting
-    ├── CREDENTIALS.md             # Dónde viven las credenciales default (sin valores reales)
+    ├── ARCHITECTURE.md              # Cómo encajan las piezas (KIND, port-forward, túneles)
+    ├── CLOUDFLARE-SETUP.md          # Guía completa de acceso remoto con Cloudflare Tunnel
+    ├── SETUP.md                     # Guía de acceso remoto con ngrok (alternativa)
+    ├── CREDENTIALS.md               # Dónde viven las credenciales default (sin valores reales)
     └── IBM-DEVELOPER-EDITION-RESUMEN.md  # Resumen propio de la guía oficial de IBM (Developer Edition)
 ```
 
 ## Quickstart
 
-1. Descarga el instalador de IBM y colócalo en `installer/watsonx.data-developer-edition-installer.tar` (no incluido en el repo).
-2. Instala watsonx.data (y, opcionalmente, el kit de acceso remoto) en la VM RHEL:
-   ```bash
-   sudo ./scripts/setup-watsonx-data.sh                    # solo watsonx.data
-   sudo ./scripts/setup-watsonx-data.sh --remote-access    # + ngrok, systemd y wxd-tunnels.sh
-   ```
-   Al terminar, la consola queda en `https://<host>:6443/` (`ibmlhadmin` / `password`).
-3. Para acceso remoto: `ngrok config add-authtoken <TOKEN>`, reserva 3 dominios fijos y ajusta `DOMAIN_*` en `wxd-tunnels.sh` (ver `docs/SETUP.md`, secciones 2–5).
-4. Corre:
-   ```bash
-   sudo /usr/local/bin/wxd-tunnels.sh
-   ```
-   y elige la opción **1) Levantar túneles**.
+### 1. Instalar watsonx.data
 
-Para desinstalar: `sudo ./scripts/setup-watsonx-data.sh --uninstall` (añade `--purge` para quitar también Docker).
+```bash
+sudo ./scripts/setup-watsonx-data.sh
+```
+
+Al terminar, la consola queda en `https://<host>:6443/` (`ibmlhadmin` / `password`).
+
+### 2. Configurar acceso remoto — Cloudflare Tunnel (recomendado, gratis)
+
+Necesitas:
+- Cuenta de Cloudflare gratuita ([dash.cloudflare.com](https://dash.cloudflare.com))
+- Un [API Token](https://dash.cloudflare.com/profile/api-tokens) con permisos `Cloudflare Tunnel:Edit` + `DNS:Edit`
+- Tu Account ID (panel derecho del dashboard de CF)
+- (Opcional) Un dominio delegado a Cloudflare para URLs amigables
+
+```bash
+# Primero instala los servicios systemd de port-forward (una sola vez):
+sudo cp systemd/wxd-pf@.service /etc/systemd/system/
+sudo mkdir -p /etc/wxd-tunnels
+sudo cp systemd/ui.env systemd/minio.env systemd/presto.env /etc/wxd-tunnels/
+sudo systemctl daemon-reload
+sudo systemctl enable wxd-pf@ui wxd-pf@minio wxd-pf@presto
+
+# Luego configura Cloudflare (instala cloudflared, crea túnel, DNS y servicio systemd):
+sudo ./scripts/install-cloudflare.sh
+```
+
+El script te guía interactivamente. Al final muestra las URLs listas para usar. Ver `docs/CLOUDFLARE-SETUP.md` para la guía completa.
+
+### Uso diario (Cloudflare)
+
+```bash
+sudo wxd-tunnels-cf.sh
+```
+
+### 2 (alternativa). Acceso remoto con ngrok (requiere plan de pago)
+
+```bash
+sudo ./scripts/setup-watsonx-data.sh --remote-access    # instala ngrok + systemd + wxd-tunnels.sh
+ngrok config add-authtoken <TOKEN>
+# Reserva 3 dominios fijos en https://dashboard.ngrok.com/domains y ajusta DOMAIN_* en wxd-tunnels.sh
+sudo wxd-tunnels.sh
+```
+
+Ver `docs/SETUP.md` para la guía completa de ngrok.
 
 ## Scripts
 
 | Script | Descripción |
 |---|---|
-| `setup-watsonx-data.sh` | Extrae el `.tar`, ejecuta el `installer.sh` de IBM (docker, kubectl, helm, kind, cluster `kind-wxd`, chart `wxd`), verifica el resultado real, asegura el port-forward de la consola (6443) y muestra URL/credenciales. `Ctrl+C` seguro, diagnóstico automático en `installer/diagnostics-*.log` y mueve etcd a un disco rápido si el de Docker es lento. Opciones: `--tar`, `--remote-access`, `--etcd-dir`, `--no-etcd-relocate`, `--uninstall`, `--yes`, `--help`. |
-| `install-deps.sh` | Instala `ngrok` (x86_64/aarch64) y recuerda los pasos manuales de ngrok. |
+| `setup-watsonx-data.sh` | Extrae el `.tar`, ejecuta el `installer.sh` de IBM (docker, kubectl, helm, kind, cluster `kind-wxd`, chart `wxd`), verifica el resultado real, asegura el port-forward de la consola (6443) y muestra URL/credenciales. Opciones: `--tar`, `--remote-access`, `--etcd-dir`, `--no-etcd-relocate`, `--uninstall`, `--yes`, `--help`. |
+| `install-cloudflare.sh` | Instala `cloudflared`, autentica con la API de Cloudflare, crea el túnel, detecta zonas DNS (o usa URL UUID automática), crea registros CNAME e instala el servicio systemd `wxd-cloudflared`. Opción `--uninstall` elimina todo. |
+| `wxd-tunnels-cf.sh` | Gestiona port-forwards (systemd) y túnel Cloudflare. Menú: levantar / detener / estado / reiniciar / logs. |
+| `install-deps.sh` | Instala `ngrok` (x86_64/aarch64). Alternativa a Cloudflare. |
 | `wxd-tunnels.sh` | Gestiona port-forwards (systemd) y túneles ngrok. |
 
 ## ⚠️ Seguridad
 
 - Este kit expone interfaces de administración a internet público. Las credenciales default de watsonx.data developer edition (`ibmlhadmin` / `password`) y del MinIO de este entorno (`dummyvalue` / `dummyvalue`) son públicas y conocidas — **cámbialas** si vas a dejar el entorno expuesto más allá de pruebas puntuales.
 - `installer.sh` abre port-forwards con `--address 0.0.0.0` (6443, 9001, 8381): cualquiera con acceso de red a la VM los alcanza. Restringe con firewall/security groups.
-- No subas al repo ningún archivo con credenciales reales, tokens de ngrok, kubeconfigs, ni el instalador de IBM (con licencia propietaria ni su contenido extraído, que incluye `values-secret.yaml`).
+- El API Token de Cloudflare y el archivo `/etc/cloudflared/tunnel-creds.json` son secretos — no los subas al repo ni los compartas.
+- No subas al repo ningún archivo con credenciales reales, tokens de ngrok o Cloudflare, kubeconfigs, ni el instalador de IBM (con licencia propietaria ni su contenido extraído, que incluye `values-secret.yaml`).
 - Revisa `.gitignore` antes de tu primer commit.

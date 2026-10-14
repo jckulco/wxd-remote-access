@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare Tunnel for watsonx.data Developer Edition
+After=network-online.target wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
+Wants=network-online.target
+Requires=wxd-pf@ui.service wxd-pf@minio.service wxd-pf@presto.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
