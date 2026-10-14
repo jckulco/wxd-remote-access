@@ -44,7 +44,7 @@ Para desinstalar: `sudo ./scripts/setup-watsonx-data.sh --uninstall`.
 
 | Script | Descripción |
 |---|---|
-| `setup-watsonx-data.sh` | Extrae el `.tar`, ejecuta el `installer.sh` de IBM (docker, kubectl, helm, kind, cluster `kind-wxd`, chart `wxd`), verifica pods, asegura el port-forward de la consola (6443) y muestra URL/credenciales. Opciones: `--tar`, `--remote-access`, `--uninstall`, `--yes`, `--help`. |
+| `setup-watsonx-data.sh` | Extrae el `.tar`, ejecuta el `installer.sh` de IBM (docker, kubectl, helm, kind, cluster `kind-wxd`, chart `wxd`), verifica el resultado real, asegura el port-forward de la consola (6443) y muestra URL/credenciales. `Ctrl+C` seguro, diagnóstico automático en `installer/diagnostics-*.log` y mueve etcd a un disco rápido si el de Docker es lento. Opciones: `--tar`, `--remote-access`, `--etcd-dir`, `--no-etcd-relocate`, `--uninstall`, `--yes`, `--help`. |
 | `install-deps.sh` | Instala `ngrok` (x86_64/aarch64) y recuerda los pasos manuales de ngrok. |
 | `wxd-tunnels.sh` | Gestiona port-forwards (systemd) y túneles ngrok. |
 

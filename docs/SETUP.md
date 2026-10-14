@@ -60,6 +60,35 @@ sudo ./scripts/setup-watsonx-data.sh --remote-access                 # además i
 sudo ./scripts/setup-watsonx-data.sh --help
 ```
 
+Más opciones:
+
+```bash
+sudo ./scripts/setup-watsonx-data.sh --etcd-dir /var/lib/mi-etcd     # fuerza etcd en ese directorio (disco rápido)
+sudo ./scripts/setup-watsonx-data.sh --no-etcd-relocate              # nunca mover etcd
+```
+
+### Robustez del script
+
+| Comportamiento | Detalle |
+|---|---|
+| **`Ctrl+C` seguro** | `installer.sh` corre en su propia sesión (`setsid`). Al interrumpir, el script mata `installer.sh` y `helm upgrade` en vez de dejarlos huérfanos, y guarda un diagnóstico. |
+| **Verificación real** | `installer.sh` devuelve 0 aunque falle `helm`/`kind`. `verify_install` comprueba herramientas, cluster `kind-wxd`, release `deployed` y pods. |
+| **Diagnóstico automático** | Si la instalación falla, se interrumpe o se desinstala, guarda `installer/diagnostics-<fecha>.log` (eventos, logs de `kube-apiserver` y `etcd`, `kubelet`, `dmesg`) antes de que se pierdan al borrar el cluster. |
+| **etcd en disco rápido** | Mide la latencia de `fsync` del disco de Docker. Si supera 10 ms (`WXD_FSYNC_MAX_MS`) y `/var/lib/kind-wxd-etcd` es al menos 2× más rápido, crea el cluster con `/var/lib/etcd` del nodo montado en ese directorio. |
+
+> **Por qué lo de etcd.** En una VM de prueba, el directorio de Docker estaba en un disco de datos
+> secundario con `fsync` de ~21 ms (el disco del SO: ~3,6 ms). Con ese disco, el `kube-apiserver`
+> se reinició y la instalación no convergió en dos intentos (síntomas: `EOF`,
+> `connection reset by peer`, `failed to sync configmap cache`, pods en `ContainerCreating`).
+> La reubicación de etcd es la mitigación que adopta el script; **está implementada pero aún no
+> se ha comprobado de extremo a extremo que resuelva el problema.** Si tu disco de Docker es
+> rápido, no se aplica.
+>
+> El script modifica la copia extraída de `installer.sh` (`kind create cluster ... --config`),
+> no el `.tar` original. Al desinstalar, borra el subdirectorio `member/` de `--etcd-dir`:
+> no uses como `--etcd-dir` un directorio con otros datos.
+
+
 Verificación manual posterior:
 
 ```bash
@@ -187,6 +216,8 @@ IBM también publica un `uninstaller.sh` oficial; úsalo si prefieres el método
 |---|---|
 | `No se encontró el instalador` | El `.tar` no está en `installer/`; descárgalo o usa `--tar`. |
 | `kind create cluster` falla con "node(s) already exist" | Quedó un cluster previo: `sudo ./scripts/setup-watsonx-data.sh --uninstall` y reinstala. |
+| Pods en `ContainerCreating` durante mucho tiempo, `kube-apiserver` con reinicios, `EOF` / `connection reset by peer` en helm | Disco lento para etcd. Revisa `installer/diagnostics-*.log` y mide: `dd if=/dev/zero of=<dir-docker>/t bs=8k count=1000 oflag=dsync` (más de ~10 s en total es lento). Usa `--etcd-dir` hacia un disco más rápido o una VM con mejor almacenamiento. |
+| `Ctrl+C` y siguen procesos | Usa el script más reciente. Comprueba con `pgrep -af 'installer.sh\|helm upgrade'`. |
 | Pods en `ImagePullBackOff` | Sin acceso a `icr.io` o credenciales de `values-secret.yaml` inválidas; revisa red/proxy. |
 | Instalación interrumpida | Revisa `installer/setup-watsonx-data.log`; el script se puede relanzar (es re-ejecutable). |
 | Consola no abre en `:6443` | Puerto bloqueado en firewall (`firewall-cmd --add-port=6443/tcp`) o port-forward caído. |
