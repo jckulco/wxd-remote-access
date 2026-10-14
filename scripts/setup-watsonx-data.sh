@@ -74,6 +74,13 @@ require_root() {
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 
+# installer.sh de IBM instala helm y kind en /usr/local/bin, que no siempre está
+# en el PATH de root (sudo secure_path); sin esto "helm/kind: command not found".
+export PATH="$PATH:/usr/local/bin"
+
+# El .tar fue creado en macOS: GNU tar avisa de cabeceras 'LIBARCHIVE.xattr.*' (inofensivo).
+TAR_OPTS=(--warning=no-unknown-keyword)
+
 # ---------------------------------------------------------------------------
 # Desinstalación (paso 8, opcional)
 # ---------------------------------------------------------------------------
@@ -128,7 +135,7 @@ preflight() {
 
   # (se evita 'tar | grep -q': con pipefail, grep -q cierra el pipe y tar muere por SIGPIPE)
   local listing
-  listing="$(tar -tf "$TAR_FILE" 2>/dev/null)" || die "No se pudo leer $TAR_FILE (¿tar corrupto?)."
+  listing="$(tar "${TAR_OPTS[@]}" -tf "$TAR_FILE" 2>/dev/null)" || die "No se pudo leer $TAR_FILE (¿tar corrupto?)."
   grep -qE '(^|/)installer\.sh$' <<<"$listing" \
     || die "El archivo $TAR_FILE no parece el instalador de watsonx.data (no contiene installer.sh)."
 
@@ -146,14 +153,14 @@ preflight() {
 run_installer() {
   # Directorio raíz que crea el .tar (varía según la versión del paquete)
   local listing top extract_dir
-  listing="$(tar -tf "$TAR_FILE")"
+  listing="$(tar "${TAR_OPTS[@]}" -tf "$TAR_FILE")"
   top="${listing%%/*}"
   [ -n "$top" ] || die "No se pudo determinar el directorio raíz del .tar."
   extract_dir="$INSTALLER_DIR/$top"
 
   log "[1/4] Extrayendo $TAR_FILE en $INSTALLER_DIR ..."
   rm -rf "$extract_dir"
-  tar -xf "$TAR_FILE" -C "$INSTALLER_DIR"
+  tar "${TAR_OPTS[@]}" -xf "$TAR_FILE" -C "$INSTALLER_DIR"
   [ -f "$extract_dir/installer.sh" ] || die "installer.sh no está en $extract_dir"
 
   log "[2/4] Entrando a $extract_dir"
@@ -174,7 +181,35 @@ run_installer() {
   wait 2>/dev/null || true   # espera a que tail termine de volcar el log
 
   [ "$rc" -eq 0 ] || die "installer.sh terminó con código $rc. Revisa $LOG_FILE"
-  log "installer.sh terminó correctamente."
+  log "installer.sh terminó con código 0; verificando que realmente quedó instalado..."
+}
+
+# installer.sh devuelve 0 aunque fallen helm/kind (su bucle de espera da "OK" si kubectl
+# no responde), así que se comprueba explícitamente el resultado.
+verify_install() {
+  local ok=true out tool
+  for tool in docker kubectl helm kind; do
+    command -v "$tool" >/dev/null 2>&1 || { warn "No se encontró '$tool' en el PATH."; ok=false; }
+  done
+
+  # Se captura la salida en variables (no 'cmd | grep -q'): con pipefail daría falsos negativos por SIGPIPE.
+  if [ "$ok" = true ]; then
+    out="$(kind get clusters 2>/dev/null || true)"
+    grep -qx "$KIND_CLUSTER" <<<"$out" \
+      || { warn "No existe el cluster KIND '$KIND_CLUSTER'."; ok=false; }
+
+    out="$(helm status "$HELM_RELEASE" -n "$NAMESPACE" 2>/dev/null || true)"
+    grep -q 'STATUS: deployed' <<<"$out" \
+      || { warn "El release Helm '$HELM_RELEASE' no está en estado 'deployed' (namespace $NAMESPACE)."; ok=false; }
+
+    out="$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null || true)"
+    [ -n "$out" ] \
+      || { warn "No hay pods en el namespace '$NAMESPACE' (o kubectl no conecta al cluster)."; ok=false; }
+  fi
+
+  [ "$ok" = true ] || die "La instalación NO se completó correctamente aunque installer.sh devolvió 0.
+   Revisa $LOG_FILE (busca 'command not found' o errores de helm/kind) y vuelve a correr el script."
+  log "Instalación verificada: cluster '$KIND_CLUSTER' y release '$HELM_RELEASE' presentes."
 }
 
 # ---------------------------------------------------------------------------
@@ -246,6 +281,7 @@ main() {
 
   preflight
   run_installer
+  verify_install
   verify_and_expose
   if [ "$WITH_REMOTE_ACCESS" = true ]; then
     install_remote_access
