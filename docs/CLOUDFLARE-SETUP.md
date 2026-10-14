@@ -11,8 +11,21 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 ```
 
 > `install-cloudflare.sh` instala en una sola ejecución: el binario `cloudflared`, los servicios
-> systemd de port-forward (`wxd-pf@ui/minio/presto`) si aún no están, crea el túnel, genera los
-> DNS y registra el servicio `wxd-cloudflared`. No se requieren pasos manuales intermedios.
+> systemd de port-forward (`wxd-pf@ui/minio/presto`) si aún no están, crea el túnel, configura
+> las URLs y registra el servicio `wxd-cloudflared`. No se requieren pasos manuales intermedios.
+
+## Modos de URL disponibles
+
+El script detecta automáticamente qué opciones tienes disponibles y te presenta un menú:
+
+| Modo | URLs resultantes | Requisito |
+|---|---|---|
+| **Dominio propio** | `https://wxd-ui.tudominio.com` × 3 | Un dominio delegado a Cloudflare |
+| **workers.dev** | `https://wxd-ui.<cuenta>.workers.dev` × 3 | Solo una cuenta Cloudflare gratuita |
+| **UUID** (fallback) | `https://<uuid>.cfargotunnel.com` | Ninguno — pero solo expone Lakehouse UI |
+
+> **Recomendación:** usa el modo **workers.dev** si no tienes dominio propio — es completamente
+> gratuito y da 3 URLs separadas para los 3 servicios.
 
 ## 0. Antes de empezar
 
@@ -32,7 +45,7 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 | Cuenta Cloudflare | Gratuita — [dash.cloudflare.com](https://dash.cloudflare.com) |
 | Account ID | Panel derecho de la página principal de tu cuenta |
 | API Token | Ver sección 1 abajo |
-| Dominio (opcional) | Si tienes un dominio delegado a Cloudflare, el script creará subdomains en él. Si no, usará una URL automática de tipo `UUID.cfargotunnel.com` |
+| Dominio | Opcional — si no tienes, el script usa workers.dev (gratuito) o UUID |
 
 ## 1. Crear el API Token de Cloudflare
 
@@ -40,15 +53,18 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 2. Clic en **Create Token** → **Create Custom Token**
 3. Asigna los siguientes permisos:
 
-   | Tipo | Recurso | Permiso |
-   |---|---|---|
-   | Account | Cloudflare Tunnel | Edit |
-   | Zone | DNS | Edit |
+   | Tipo | Recurso | Permiso | Cuándo se usa |
+   |---|---|---|---|
+   | Account | Cloudflare Tunnel | Edit | Siempre |
+   | Account | Workers Scripts | Edit | Modo workers.dev |
+   | Account | Workers Routes | Edit | Modo workers.dev |
+   | Zone | DNS | Edit | Solo si usas dominio propio |
 
-   > Si no tienes dominio propio en Cloudflare, el permiso de DNS es opcional (el script no lo usará).
+   > Para workers.dev sin dominio propio: solo necesitas los 3 permisos de Account.
+   > El permiso de DNS es opcional si no tienes zona en Cloudflare.
 
 4. En **Account Resources**: selecciona tu cuenta
-5. En **Zone Resources**: selecciona la zona donde quieres los subdominios (o "All zones" si tienes varias)
+5. En **Zone Resources**: si tienes dominio, selecciona la zona; si no, puedes dejar "All zones"
 6. Clic en **Continue to summary** → **Create Token**
 7. Copia el token — solo se muestra una vez
 
@@ -58,34 +74,45 @@ a internet con URLs estables y TLS automático, usando tu cuenta gratuita de Clo
 sudo ./scripts/install-cloudflare.sh
 ```
 
-El script te pedirá interactivamente:
+El script te pedirá interactivamente el token y el Account ID, luego detectará tus opciones:
 
-```
-Pega tu Cloudflare API Token: ••••••••••••••••••
-Pega tu Account ID:           abc123def456...
-```
-
-Si tienes zonas activas en tu cuenta, mostrará el menú:
+### Si tienes zonas DNS en tu cuenta
 
 ```
   Zonas activas encontradas en tu cuenta:
 
     1) tudominio.com
-    2) otroproyecto.net
-    0) Usar URL automática (UUID de cfargotunnel.com — sin dominio propio)
+    w) Usar workers.dev gratuito (3 subdominios <cuenta>.workers.dev)
+    0) Usar URL automática UUID (solo Lakehouse UI, sin subdominios)
 
-  Elige una zona [0-2]:
+  Elige una zona [0-1 / w]:
 ```
 
-Si eliges una zona, podrás personalizar los subdominios:
+### Si NO tienes zonas DNS
 
 ```
-  Subdominio para Lakehouse UI   [wxd-ui]:
-  Subdominio para MinIO Console  [wxd-minio]:
-  Subdominio para Presto UI      [wxd-presto]:
+  No hay zonas DNS en tu cuenta.
+  Opciones:
+    w) Usar workers.dev gratuito (3 subdominios <cuenta>.workers.dev)
+    0) Usar URL UUID (solo Lakehouse UI)
+
+  Elige [w/0]:
 ```
 
-### Resultado si eliges tu dominio
+### Resultado modo workers.dev
+
+```
+  ✅  Cloudflare Tunnel configurado exitosamente
+
+  Lakehouse UI  : https://wxd-ui.micuenta.workers.dev
+  MinIO Console : https://wxd-minio.micuenta.workers.dev
+  Presto UI     : https://wxd-presto.micuenta.workers.dev
+
+  (Modo workers.dev: si alguna URL tarda en responder espera ~30 s
+   a que Cloudflare propague los Workers recién creados.)
+```
+
+### Resultado modo dominio propio
 
 ```
   ✅  Cloudflare Tunnel configurado exitosamente
@@ -95,21 +122,19 @@ Si eliges una zona, podrás personalizar los subdominios:
   Presto UI     : https://wxd-presto.tudominio.com
 ```
 
-### Resultado si eliges URL automática (sin dominio)
+### Resultado modo UUID (fallback, sin dominio ni workers.dev)
 
 ```
   ✅  Cloudflare Tunnel configurado exitosamente
 
   URL base (UUID): https://a1b2c3d4-e5f6-7890-abcd-ef1234567890.cfargotunnel.com
-```
 
-> **Nota:** En modo UUID, el túnel apunta solo a `localhost:9443` (Lakehouse UI).
-> Para exponer los 3 servicios con URLs separadas necesitas un dominio.
-> En este caso, accede a MinIO (`localhost:9101`) y Presto (`localhost:9200`) directamente
-> desde la VM o usando el port-forward del instalador (`localhost:6443 / 9001 / 8381`).
+  (Modo UUID: solo Lakehouse UI expuesta.)
+```
 
 ### Modo no interactivo (scripting / CI)
 
+Con dominio propio:
 ```bash
 sudo ./scripts/install-cloudflare.sh \
   --token   "eyJhbGciOiJIUzI..." \
@@ -119,6 +144,15 @@ sudo ./scripts/install-cloudflare.sh \
   --sub-ui    "wxd-ui" \
   --sub-minio "wxd-minio" \
   --sub-presto "wxd-presto" \
+  --yes
+```
+
+Con workers.dev (sin dominio):
+```bash
+sudo ./scripts/install-cloudflare.sh \
+  --token       "eyJhbGciOiJIUzI..." \
+  --account     "abc123def456" \
+  --workers-dev \
   --yes
 ```
 
@@ -197,6 +231,9 @@ Hace:
 | `jq: command not found` | `dnf install -y jq` |
 | Quiero cambiar los subdominios | Re-ejecuta `install-cloudflare.sh` con `--sub-ui`, `--sub-minio`, `--sub-presto` diferentes. El script actualiza el DNS y el `config.yml` en el mismo túnel. |
 | Quiero usar otro dominio | Re-ejecuta sin `--zone` y `--domain` para que el script vuelva a detectar zonas interactivamente. |
+| workers.dev no carga (timeout / error 1033) | Los Workers tardan ~30 s en propagarse. Si tras 1 min sigue fallando, verifica con `cf_get /accounts/<id>/workers/scripts/wxd-proxy-ui`. |
+| `No se pudo subir el Worker ... Workers Scripts:Edit` | El token no tiene el permiso `Workers Scripts:Edit`. Regenera el token incluyendo ese permiso y los de `Workers Routes:Edit`. |
+| `No se pudo obtener/activar el subdominio workers.dev` | Ve a [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → activa tu subdominio manualmente y vuelve a ejecutar el script. |
 
 ## 8. Diferencias con el flujo ngrok
 

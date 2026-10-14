@@ -9,37 +9,42 @@
 #   1. Instala el binario cloudflared (x86_64 / aarch64, RHEL/CentOS/Rocky/Alma)
 #   2. Autentica contra la API de Cloudflare con un token
 #   3. Crea un túnel nombrado vía API REST de Cloudflare
-#   4. Detecta si hay una zona activa en tu cuenta:
-#        - Si hay zona → genera subdominos en tu dominio (ej. wxd-ui.tudominio.com)
-#        - Si no hay zona → usa la URL automática UUID (*.cfargotunnel.com)
+#   4. Detecta cómo generar las URLs de los 3 servicios (UI, MinIO, Presto):
+#        - Si hay zona DNS activa → subdominios en tu dominio (ej. wxd-ui.tudominio.com)
+#        - Si hay subdominio workers.dev habilitado → subdominios workers.dev gratuitos
+#          (wxd-ui.<cuenta>.workers.dev) creando 3 Cloudflare Workers de proxy
+#        - Si no hay ninguno → ofrece activar workers.dev o usar UUID (solo UI)
 #   5. Escribe la config de cloudflared (/etc/cloudflared/config.yml)
-#   6. Instala y habilita el servicio systemd wxd-cloudflared.service
+#   6. Instala los servicios systemd de port-forward si no existen
+#   7. Instala y habilita el servicio systemd wxd-cloudflared.service
 #
 # Uso:
 #   sudo ./scripts/install-cloudflare.sh
 #   sudo ./scripts/install-cloudflare.sh --token <CF_API_TOKEN> --account <CF_ACCOUNT_ID>
 #   sudo ./scripts/install-cloudflare.sh --token <TOKEN> --account <ID> --zone <ZONE_ID> \
 #        --domain <DOMINIO> --sub-ui wxd-ui --sub-minio wxd-minio --sub-presto wxd-presto
+#   sudo ./scripts/install-cloudflare.sh --token <TOKEN> --account <ID> --workers-dev
 #
 # Opciones:
-#   --token    <TOKEN>      API Token de Cloudflare (Tunnel:Edit + DNS:Edit en la zona)
-#   --account  <ID>         Account ID de Cloudflare
-#   --zone     <ZONE_ID>    Zone ID (opcional; si se omite el script lo detecta o usa UUID)
-#   --domain   <DOMINIO>    Dominio base (ej. midominio.com; solo si se especifica --zone)
-#   --sub-ui   <SUBDOMINIO> Subdominio para la Lakehouse UI (default: wxd-ui)
-#   --sub-minio <SUBDOMINIO> Subdominio para MinIO Console (default: wxd-minio)
+#   --token      <TOKEN>      API Token de Cloudflare
+#                             Permisos necesarios: Cloudflare Tunnel:Edit + Workers Scripts:Edit
+#                             + Workers Routes:Edit. DNS:Edit también si usas dominio propio.
+#   --account    <ID>         Account ID de Cloudflare
+#   --zone       <ZONE_ID>    Zone ID (opcional; si se omite el script lo detecta o usa workers.dev)
+#   --domain     <DOMINIO>    Dominio base (ej. midominio.com; solo si se especifica --zone)
+#   --sub-ui     <SUBDOMINIO> Subdominio para la Lakehouse UI (default: wxd-ui)
+#   --sub-minio  <SUBDOMINIO> Subdominio para MinIO Console (default: wxd-minio)
 #   --sub-presto <SUBDOMINIO> Subdominio para Presto UI (default: wxd-presto)
-#   --tunnel-name <NOMBRE>  Nombre del túnel en Cloudflare (default: wxd-dev)
-#   --uninstall             Elimina el servicio, config y el túnel de Cloudflare
-#   --yes                   Sin prompts de confirmación
+#   --tunnel-name <NOMBRE>    Nombre del túnel en Cloudflare (default: wxd-dev)
+#   --workers-dev             Fuerza el modo workers.dev (sin dominio propio)
+#   --uninstall               Elimina el servicio, config, Workers y el túnel de Cloudflare
+#   --yes                     Sin prompts de confirmación
 #   --help
 #
 # Requisitos:
-#   - Los servicios systemd wxd-pf@ui, wxd-pf@minio, wxd-pf@presto ya instalados
-#     (ver systemd/ en este repo y docs/SETUP.md).
 #   - curl, jq, openssl disponibles en la VM.
-#   - Token de Cloudflare con permisos: Cloudflare Tunnel:Edit, DNS:Edit (en la zona).
-#     Crear en: https://dash.cloudflare.com/profile/api-tokens
+#   - Token de Cloudflare con permisos: Cloudflare Tunnel:Edit, Workers Scripts:Edit,
+#     Workers Routes:Edit. Crear en: https://dash.cloudflare.com/profile/api-tokens
 
 set -euo pipefail
 
@@ -61,6 +66,9 @@ SUB_PRESTO="wxd-presto"
 TUNNEL_NAME="wxd-dev"
 UNINSTALL=false
 AUTO_YES=false
+FORCE_WORKERS_DEV=false
+USE_WORKERS_DEV=false
+CF_WORKERS_SUBDOMAIN=""   # <cuenta>.workers.dev — se detecta vía API
 
 CF_CONFIG_DIR="/etc/cloudflared"
 CF_CONFIG_FILE="$CF_CONFIG_DIR/config.yml"
@@ -70,16 +78,17 @@ CF_API="https://api.cloudflare.com/client/v4"
 # ─── Parseo de argumentos ───────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --token)       CF_TOKEN="$2";        shift 2 ;;
-    --account)     CF_ACCOUNT_ID="$2";   shift 2 ;;
-    --zone)        CF_ZONE_ID="$2";      shift 2 ;;
-    --domain)      CF_DOMAIN="$2";       shift 2 ;;
-    --sub-ui)      SUB_UI="$2";          shift 2 ;;
-    --sub-minio)   SUB_MINIO="$2";       shift 2 ;;
-    --sub-presto)  SUB_PRESTO="$2";      shift 2 ;;
-    --tunnel-name) TUNNEL_NAME="$2";     shift 2 ;;
-    --uninstall)   UNINSTALL=true;       shift ;;
-    --yes)         AUTO_YES=true;        shift ;;
+    --token)        CF_TOKEN="$2";        shift 2 ;;
+    --account)      CF_ACCOUNT_ID="$2";   shift 2 ;;
+    --zone)         CF_ZONE_ID="$2";      shift 2 ;;
+    --domain)       CF_DOMAIN="$2";       shift 2 ;;
+    --sub-ui)       SUB_UI="$2";          shift 2 ;;
+    --sub-minio)    SUB_MINIO="$2";       shift 2 ;;
+    --sub-presto)   SUB_PRESTO="$2";      shift 2 ;;
+    --tunnel-name)  TUNNEL_NAME="$2";     shift 2 ;;
+    --workers-dev)  FORCE_WORKERS_DEV=true; shift ;;
+    --uninstall)    UNINSTALL=true;       shift ;;
+    --yes)          AUTO_YES=true;        shift ;;
     --help)
       grep '^#' "$0" | grep -v '#!/' | sed 's/^# \?//'
       exit 0 ;;
@@ -140,14 +149,30 @@ if $UNINSTALL; then
   rm -f /etc/systemd/system/wxd-cloudflared.service
   systemctl daemon-reload
 
-  # Eliminar túnel en CF API
   if [[ -n "$CF_TOKEN" && -f "$CF_CREDS_FILE" ]]; then
     TUNNEL_ID=$(jq -r '.TunnelID // .tunnel_id // ""' "$CF_CREDS_FILE" 2>/dev/null || true)
     ACCOUNT_FROM_CREDS=$(jq -r '.AccountTag // .account_id // ""' "$CF_CREDS_FILE" 2>/dev/null || true)
     [[ -z "$CF_ACCOUNT_ID" ]] && CF_ACCOUNT_ID="$ACCOUNT_FROM_CREDS"
+
+    # Eliminar Workers de proxy (modo workers.dev) antes de eliminar el túnel
+    if [[ -n "$CF_ACCOUNT_ID" ]]; then
+      for WORKER_NAME in "wxd-proxy-ui" "wxd-proxy-minio" "wxd-proxy-presto"; do
+        WORKER_EXISTS=$(cf_get "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" 2>/dev/null \
+          | jq -r '.success // false')
+        if [[ "$WORKER_EXISTS" == "true" ]]; then
+          info "Eliminando Worker '${WORKER_NAME}'..."
+          cf_delete "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" >/dev/null \
+            || warn "No se pudo eliminar el Worker '${WORKER_NAME}'."
+          ok "Worker '${WORKER_NAME}' eliminado."
+        fi
+      done
+    fi
+
+    # Eliminar túnel en CF API
     if [[ -n "$TUNNEL_ID" && -n "$CF_ACCOUNT_ID" ]]; then
       info "Eliminando túnel $TUNNEL_ID de Cloudflare..."
-      cf_delete "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}?cascade=true" || warn "No se pudo eliminar el túnel via API."
+      cf_delete "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}?cascade=true" \
+        || warn "No se pudo eliminar el túnel via API."
       ok "Túnel eliminado en Cloudflare."
     fi
   fi
@@ -225,12 +250,15 @@ if ! echo "$TOKEN_CHECK" | jq -e '.success == true' >/dev/null 2>&1; then
 fi
 ok "Token válido."
 
-# ─── Detectar zona DNS ───────────────────────────────────────────────────────
+# ─── Detectar zona DNS o subdominio workers.dev ──────────────────────────────
 USE_DOMAIN=false
 
 if [[ -n "$CF_ZONE_ID" && -n "$CF_DOMAIN" ]]; then
   USE_DOMAIN=true
   info "Usando zona y dominio especificados: $CF_DOMAIN"
+elif $FORCE_WORKERS_DEV; then
+  info "Modo workers.dev forzado con --workers-dev."
+  USE_WORKERS_DEV=true
 else
   info "Detectando zonas activas en tu cuenta Cloudflare..."
   ZONES_JSON=$(cf_get "/zones?account.id=${CF_ACCOUNT_ID}&status=active&per_page=50" 2>/dev/null || echo '{"result":[]}')
@@ -246,9 +274,10 @@ else
     for i in "${!ZONE_NAMES[@]}"; do
       echo "    $((i+1))) ${ZONE_NAMES[$i]}"
     done
-    echo "    0) Usar URL automática (UUID de cfargotunnel.com — sin dominio propio)"
+    echo "    w) Usar workers.dev gratuito (3 subdominios <cuenta>.workers.dev)"
+    echo "    0) Usar URL automática UUID (solo Lakehouse UI, sin subdominios)"
     echo ""
-    read -rp "  Elige una zona [0-${ZONE_COUNT}]: " ZONE_CHOICE
+    read -rp "  Elige una zona [0-${ZONE_COUNT} / w]: " ZONE_CHOICE
 
     if [[ "$ZONE_CHOICE" =~ ^[1-9][0-9]*$ && "$ZONE_CHOICE" -le "$ZONE_COUNT" ]]; then
       IDX=$((ZONE_CHOICE-1))
@@ -258,20 +287,34 @@ else
       ok "Usando zona: $CF_DOMAIN ($CF_ZONE_ID)"
 
       echo ""
-      echo "  Subdominos que se crearán (puedes cambiarlos):"
+      echo "  Subdominios que se crearán (Enter para aceptar el default):"
       read -rp "  Subdominio para Lakehouse UI   [${SUB_UI}]: " INPUT
       [[ -n "$INPUT" ]] && SUB_UI="$INPUT"
       read -rp "  Subdominio para MinIO Console  [${SUB_MINIO}]: " INPUT
       [[ -n "$INPUT" ]] && SUB_MINIO="$INPUT"
       read -rp "  Subdominio para Presto UI      [${SUB_PRESTO}]: " INPUT
       [[ -n "$INPUT" ]] && SUB_PRESTO="$INPUT"
+    elif [[ "${ZONE_CHOICE,,}" == "w" ]]; then
+      USE_WORKERS_DEV=true
     else
-      info "Usando URL automática UUID (*.cfargotunnel.com)."
+      info "Usando URL automática UUID."
       USE_DOMAIN=false
     fi
   else
-    warn "No se encontraron zonas activas en tu cuenta. Se usará URL automática UUID."
-    USE_DOMAIN=false
+    # Sin zonas: ofrecer workers.dev como alternativa antes de caer en UUID
+    echo ""
+    echo "  No hay zonas DNS en tu cuenta."
+    echo "  Opciones:"
+    echo "    w) Usar workers.dev gratuito (3 subdominios <cuenta>.workers.dev)"
+    echo "    0) Usar URL UUID (solo Lakehouse UI)"
+    echo ""
+    read -rp "  Elige [w/0]: " NO_ZONE_CHOICE
+    if [[ "${NO_ZONE_CHOICE,,}" == "w" ]]; then
+      USE_WORKERS_DEV=true
+    else
+      warn "Sin dominio ni workers.dev: solo se expone Lakehouse UI vía URL UUID."
+      USE_DOMAIN=false
+    fi
   fi
 fi
 
@@ -341,12 +384,11 @@ else
   fi
 fi
 
-# ─── Crear registros DNS (si aplica) ─────────────────────────────────────────
+# ─── Crear registros DNS (modo dominio propio) ────────────────────────────────
 if $USE_DOMAIN; then
   info "Creando registros DNS CNAME en ${CF_DOMAIN}..."
   for SUBDOMAIN in "$SUB_UI" "$SUB_MINIO" "$SUB_PRESTO"; do
     HOSTNAME="${SUBDOMAIN}.${CF_DOMAIN}"
-    # Verificar si ya existe
     EXISTING_DNS=$(cf_get "/zones/${CF_ZONE_ID}/dns_records?type=CNAME&name=${HOSTNAME}" | jq -r '.result[0].id // ""')
     DNS_CONTENT="${TUNNEL_ID}.cfargotunnel.com"
     if [[ -n "$EXISTING_DNS" ]]; then
@@ -363,12 +405,107 @@ if $USE_DOMAIN; then
   URL_UI="https://${SUB_UI}.${CF_DOMAIN}"
   URL_MINIO="https://${SUB_MINIO}.${CF_DOMAIN}"
   URL_PRESTO="https://${SUB_PRESTO}.${CF_DOMAIN}"
+
+# ─── Crear Workers de proxy (modo workers.dev) ───────────────────────────────
+elif $USE_WORKERS_DEV; then
+  info "Configurando acceso vía workers.dev..."
+
+  # Obtener el subdominio workers.dev de la cuenta
+  WD_RESP=$(cf_get "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" 2>/dev/null || echo '{"result":null}')
+  CF_WORKERS_SUBDOMAIN=$(echo "$WD_RESP" | jq -r '.result.subdomain // ""')
+
+  if [[ -z "$CF_WORKERS_SUBDOMAIN" ]]; then
+    # El subdominio workers.dev no existe — hay que crearlo/habilitarlo
+    info "  Activando subdominio workers.dev en tu cuenta..."
+    # Cloudflare asigna el subdominio automáticamente al hacer el primer PUT
+    WD_PUT=$(cf_put "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" \
+      "{\"subdomain\":\"\"}" 2>/dev/null || echo '{"result":null}')
+    CF_WORKERS_SUBDOMAIN=$(echo "$WD_PUT" | jq -r '.result.subdomain // ""')
+
+    if [[ -z "$CF_WORKERS_SUBDOMAIN" ]]; then
+      die "No se pudo obtener/activar el subdominio workers.dev.
+   Ve a https://dash.cloudflare.com → Workers & Pages → tu subdominio
+   y actívalo manualmente, luego vuelve a ejecutar este script."
+    fi
+  fi
+
+  ok "Subdominio workers.dev: ${CF_WORKERS_SUBDOMAIN}.workers.dev"
+
+  # Nombres de los Workers y sus backends en el túnel
+  # El Worker hace fetch hacia el túnel con el Host header correcto para
+  # que cloudflared enrute al servicio local correspondiente.
+  declare -A WORKER_BACKEND=(
+    ["wxd-proxy-ui"]="https://${TUNNEL_ID}.cfargotunnel.com"
+    ["wxd-proxy-minio"]="https://${TUNNEL_ID}.cfargotunnel.com"
+    ["wxd-proxy-presto"]="https://${TUNNEL_ID}.cfargotunnel.com"
+  )
+  declare -A WORKER_HOST=(
+    ["wxd-proxy-ui"]="${SUB_UI}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+    ["wxd-proxy-minio"]="${SUB_MINIO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+    ["wxd-proxy-presto"]="${SUB_PRESTO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+  )
+  declare -A WORKER_TUNNEL_HOST=(
+    ["wxd-proxy-ui"]="${SUB_UI}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+    ["wxd-proxy-minio"]="${SUB_MINIO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+    ["wxd-proxy-presto"]="${SUB_PRESTO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+  )
+
+  info "  Creando/actualizando 3 Workers de proxy..."
+  for WORKER_NAME in "wxd-proxy-ui" "wxd-proxy-minio" "wxd-proxy-presto"; do
+    TUNNEL_URL="${WORKER_BACKEND[$WORKER_NAME]}"
+    # Script JS del Worker: reenvía el request al túnel preservando método,
+    # headers y body. noTLSVerify se gestiona en el config.yml de cloudflared.
+    WORKER_JS=$(cat <<JSEOF
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const target = new URL("${TUNNEL_URL}");
+    url.hostname = target.hostname;
+    url.protocol = target.protocol;
+    url.port = target.port || "";
+    const proxied = new Request(url.toString(), request);
+    return fetch(proxied);
+  }
+};
+JSEOF
+)
+    # La API de Workers usa multipart/form-data con dos partes:
+    # "metadata" (JSON con main_module) y el script JS como "script".
+    METADATA='{"main_module":"worker.js","compatibility_date":"2024-01-01","usage_model":"bundled"}'
+
+    UPLOAD_RESP=$(curl -fsSL -X PUT \
+      -H "Authorization: Bearer ${CF_TOKEN}" \
+      -F "metadata=${METADATA};type=application/json" \
+      -F "script=${WORKER_JS};filename=worker.js;type=application/javascript+module" \
+      "${CF_API}/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}" 2>/dev/null || echo '{"success":false}')
+
+    if ! echo "$UPLOAD_RESP" | jq -e '.success == true' >/dev/null 2>&1; then
+      echo "$UPLOAD_RESP" | jq -r '.errors // . | tostring' >&2
+      die "No se pudo subir el Worker '${WORKER_NAME}'. Verifica que el token tenga permiso Workers Scripts:Edit."
+    fi
+    ok "Worker '${WORKER_NAME}' subido."
+
+    # Habilitar la ruta workers.dev (<sub>.<cuenta>.workers.dev) en el Worker
+    SUBDOMAIN_RESP=$(cf_post \
+      "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain" \
+      '{"enabled":true}' 2>/dev/null || echo '{"success":false}')
+    if ! echo "$SUBDOMAIN_RESP" | jq -e '.success == true' >/dev/null 2>&1; then
+      warn "No se pudo habilitar la ruta workers.dev para '${WORKER_NAME}' (puede tardar unos segundos — normal)."
+    else
+      ok "Ruta workers.dev habilitada: ${WORKER_HOST[$WORKER_NAME]}"
+    fi
+  done
+
+  URL_UI="https://${SUB_UI}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+  URL_MINIO="https://${SUB_MINIO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+  URL_PRESTO="https://${SUB_PRESTO}.${CF_WORKERS_SUBDOMAIN}.workers.dev"
+
 else
   URL_UI="https://${TUNNEL_ID}.cfargotunnel.com"
   URL_MINIO="https://${TUNNEL_ID}.cfargotunnel.com"
   URL_PRESTO="https://${TUNNEL_ID}.cfargotunnel.com"
-  warn "Sin dominio: los 3 servicios comparten la misma URL base (${TUNNEL_ID}.cfargotunnel.com)."
-  warn "El enrutamiento se hace por path; ver docs/CLOUDFLARE-SETUP.md para detalles."
+  warn "Sin dominio ni workers.dev: solo se expone Lakehouse UI vía URL UUID."
+  warn "Para exponer los 3 servicios ejecuta con --workers-dev o agrega un dominio a Cloudflare."
 fi
 
 # ─── Escribir config.yml de cloudflared ──────────────────────────────────────
@@ -376,7 +513,7 @@ info "Escribiendo config: ${CF_CONFIG_FILE}..."
 
 if $USE_DOMAIN; then
 cat > "$CF_CONFIG_FILE" <<EOF
-# Cloudflare Tunnel — watsonx.data Developer Edition
+# Cloudflare Tunnel — watsonx.data Developer Edition (modo dominio propio)
 # Generado por install-cloudflare.sh el $(date '+%Y-%m-%d %H:%M:%S')
 tunnel: ${TUNNEL_ID}
 credentials-file: ${CF_CREDS_FILE}
@@ -394,9 +531,31 @@ ingress:
       noTLSVerify: true
   - service: http_status:404
 EOF
+elif $USE_WORKERS_DEV; then
+# En modo workers.dev los Workers hacen proxy hacia el túnel usando el hostname
+# del Worker como Host. cloudflared enruta por hostname a cada servicio local.
+cat > "$CF_CONFIG_FILE" <<EOF
+# Cloudflare Tunnel — watsonx.data Developer Edition (modo workers.dev)
+# Generado por install-cloudflare.sh el $(date '+%Y-%m-%d %H:%M:%S')
+tunnel: ${TUNNEL_ID}
+credentials-file: ${CF_CREDS_FILE}
+
+ingress:
+  - hostname: ${SUB_UI}.${CF_WORKERS_SUBDOMAIN}.workers.dev
+    service: https://localhost:9443
+    originRequest:
+      noTLSVerify: true
+  - hostname: ${SUB_MINIO}.${CF_WORKERS_SUBDOMAIN}.workers.dev
+    service: http://localhost:9101
+  - hostname: ${SUB_PRESTO}.${CF_WORKERS_SUBDOMAIN}.workers.dev
+    service: https://localhost:9200
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
+EOF
 else
 cat > "$CF_CONFIG_FILE" <<EOF
-# Cloudflare Tunnel — watsonx.data Developer Edition (modo UUID, sin dominio)
+# Cloudflare Tunnel — watsonx.data Developer Edition (modo UUID, solo UI)
 # Generado por install-cloudflare.sh el $(date '+%Y-%m-%d %H:%M:%S')
 tunnel: ${TUNNEL_ID}
 credentials-file: ${CF_CREDS_FILE}
@@ -486,7 +645,9 @@ cat > "${CF_CONFIG_DIR}/wxd-urls.env" <<EOF
 CF_TUNNEL_ID="${TUNNEL_ID}"
 CF_TUNNEL_NAME="${TUNNEL_NAME}"
 USE_DOMAIN="${USE_DOMAIN}"
+USE_WORKERS_DEV="${USE_WORKERS_DEV}"
 CF_DOMAIN="${CF_DOMAIN:-}"
+CF_WORKERS_SUBDOMAIN="${CF_WORKERS_SUBDOMAIN:-}"
 URL_UI="${URL_UI}"
 URL_MINIO="${URL_MINIO}"
 URL_PRESTO="${URL_PRESTO}"
@@ -499,16 +660,21 @@ echo "════════════════════════�
 echo "  ✅  Cloudflare Tunnel configurado exitosamente"
 echo "════════════════════════════════════════════════════════"
 echo ""
-if $USE_DOMAIN; then
+if $USE_DOMAIN || $USE_WORKERS_DEV; then
   echo "  Lakehouse UI  : ${URL_UI}"
   echo "  MinIO Console : ${URL_MINIO}"
   echo "  Presto UI     : ${URL_PRESTO}"
+  if $USE_WORKERS_DEV; then
+    echo ""
+    echo "  (Modo workers.dev: si alguna URL tarda en responder espera ~30 s"
+    echo "   a que Cloudflare propague los Workers recién creados.)"
+  fi
 else
-  echo "  URL base      : ${URL_UI}"
+  echo "  URL base (UUID): ${URL_UI}"
   echo ""
-  echo "  (Modo UUID: un solo tunnel hacia localhost:9443."
-  echo "   Para exponer los 3 servicios con URLs separadas"
-  echo "   agrega un dominio a Cloudflare y re-ejecuta el script.)"
+  echo "  (Modo UUID: solo Lakehouse UI expuesta."
+  echo "   Para los 3 servicios: re-ejecuta con --workers-dev o agrega"
+  echo "   un dominio a Cloudflare.)"
 fi
 echo ""
 echo "  Credenciales default: ver docs/CREDENTIALS.md"
